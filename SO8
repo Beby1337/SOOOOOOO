@@ -1,0 +1,79 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <string.h>
+#include <time.h>
+
+#define HEADER 54
+#define OUTPUT "statistica.txt"
+
+void generateFileStatistics(int fd, const char* filename, const char* header) {
+    int width, height;
+    memcpy(&width, header + 18, 4);
+    memcpy(&height, header + 22, 4);
+
+    struct stat fileStat;
+    stat(filename, &fileStat);
+
+    char modifDate[40];
+    strftime(modifDate, sizeof(modifDate), "%d.%m.%Y", localtime(&fileStat.st_mtime));
+
+    char result[1000];
+    sprintf(result, "File Name: %s\nHeight: %d\nWidth: %d\nSize: %ld\nUser ID: %d\n",
+            filename, height, width, fileStat.st_size, fileStat.st_uid);
+    sprintf(result + strlen(result), "Last Modified Time: %s\nLink Count: %d\n",
+            modifDate, fileStat.st_nlink);
+    sprintf(result + strlen(result), "User Access Rights: %c%c%c\n",
+            (fileStat.st_mode & S_IRUSR) ? 'R' : '-',
+            (fileStat.st_mode & S_IWUSR) ? 'W' : '-',
+            (fileStat.st_mode & S_IXUSR) ? 'X' : '-');
+    sprintf(result + strlen(result), "Group Access Rights: %c%c%c\n",
+            (fileStat.st_mode & S_IRGRP) ? 'R' : '-',
+            (fileStat.st_mode & S_IWGRP) ? 'W' : '-',
+            (fileStat.st_mode & S_IXGRP) ? 'X' : '-');
+    sprintf(result + strlen(result), "Others Access Rights: %c%c%c\n",
+            (fileStat.st_mode & S_IROTH) ? 'R' : '-',
+            (fileStat.st_mode & S_IWOTH) ? 'W' : '-',
+            (fileStat.st_mode & S_IXOTH) ? 'X' : '-');
+
+    int outFile = open(OUTPUT, O_CREAT | O_WRONLY, S_IRUSR | S_IWUSR);
+    if (outFile == -1) {
+        perror("Couldn't create the file");
+        exit(-1);
+    }
+
+    if (write(outFile, result, strlen(result)) == -1) {
+        perror("Couldn't write to the file");
+        exit(-1);
+    }
+
+    close(outFile);
+}
+
+int main(int argc, char** argv) {
+    if (argc != 2) {
+        printf("Usage: ./program <filename>\n");
+        exit(-1);
+    }
+
+    int inputFile = open(argv[1], O_RDONLY);
+    if (inputFile == -1) {
+        perror("Couldn't open the file\n");
+        exit(-1);
+    }
+
+    char header[HEADER + 1];
+    ssize_t count = read(inputFile, header, HEADER);
+    if (count < HEADER) {
+        printf("Couldn't read the header, %zd\n", count);
+        exit(-1);
+    }
+
+    generateFileStatistics(inputFile, argv[1], header);
+    close(inputFile);
+
+    return 0;
+}
