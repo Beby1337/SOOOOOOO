@@ -1,146 +1,348 @@
-#include <stdio.h>
 #include <stdlib.h>
-#include <unistd.h>
 #include <sys/types.h>
 #include <sys/stat.h>
-#include <sys/wait.h>
-#include <dirent.h>
+#include <fcntl.h>
+#include <unistd.h>
 #include <string.h>
-
-typedef struct {
-    unsigned char red;
-    unsigned char green;
-    unsigned char blue;
-} Pixel;
-
-void processRegularFile(const char *inputFile, const char *outputDir) {
-    FILE *input = fopen(inputFile, "r");
-    if (input == NULL) {
-        perror("Error opening file");
-        return;
+#include <time.h>
+#include <stdio.h>
+#define HEADER 54
+int isBMPFile(const char *filename) {
+    FILE *file = fopen(filename, "rb");
+    if (file == NULL) {
+        perror("Eroare la deschiderea fisierului");
+        return 0; // returnează fals dacă fișierul nu poate fi deschis
     }
 
-    char outputFileName[256];
-    snprintf(outputFileName, sizeof(outputFileName), "%s/%s_statistica.txt", outputDir, inputFile);
+    char signature[3]; // "BM" + terminatorul null
+    fread(signature, 1, 2, file);
+    signature[2] = '\0'; // adăugăm terminatorul null pentru a forma un șir
 
-    FILE *output = fopen(outputFileName, "w");
-    if (output == NULL) {
-        perror("Error creating output file");
-        fclose(input);
-        return;
+    fclose(file);
+
+    // Verificăm dacă semnătura corespunde cu cea a unui fișier BMP
+    if (strcmp(signature, "BM") == 0) {
+        return 1; // returnează adevărat dacă semnătura este cea a unui fișier BMP
     }
 
-    fclose(input);
-    fclose(output);
+    return 0; // returnează fals în caz contrar
 }
+int isDirectory(const char *path) {
+    struct stat fileStat;
 
-void processBMPFile(const char *inputFile, const char *outputDir) {
-    FILE *input = fopen(inputFile, "rb");
-    if (input == NULL) {
-        perror("Error opening BMP file");
-        return;
+    if (stat(path, &fileStat) == -1) {
+        perror("Eroare la obtinerea informatiilor despre fisier");
+        return 0; // returnează fals dacă nu se pot obține informațiile despre fișier
     }
 
-    fseek(input, 18, SEEK_SET);
-    int imageWidth, imageHeight;
-    fread(&imageWidth, sizeof(int), 1, input);
-    fread(&imageHeight, sizeof(int), 1, input);
-
-    Pixel **imageData = (Pixel **)malloc(imageHeight * sizeof(Pixel *));
-    for (int i = 0; i < imageHeight; ++i) {
-        imageData[i] = (Pixel *)malloc(imageWidth * sizeof(Pixel));
-        fread(imageData[i], sizeof(Pixel), imageWidth, input);
+    if (S_ISDIR(fileStat.st_mode)) {
+        return 1; // returnează adevărat dacă fișierul specificat este un director
     }
 
-    fclose(input);
+    return 0; // returnează fals dacă fișierul nu este un director
+}
+int isRegularFileWithoutBMPExtension(const char *path) {
+    struct stat fileStat;
 
-    for (int i = 0; i < imageHeight; ++i) {
-        for (int j = 0; j < imageWidth; ++j) {
-            int red = imageData[i][j].red;
-            int green = imageData[i][j].green;
-            int blue = imageData[i][j].blue;
+    if (stat(path, &fileStat) == -1) {
+        perror("Eroare la obtinerea informatiilor despre fisier");
+        return 0; // returnează fals dacă nu se pot obține informațiile despre fișier
+    }
 
-            int gray = (int)(0.299 * red + 0.587 * green + 0.114 * blue);
+    if (S_ISREG(fileStat.st_mode)) { // Verificăm dacă este un fișier obișnuit
+        // Verificăm dacă fișierul nu are extensia .bmp
+        const char *extension = ".bmp";
+        size_t len = strlen(path);
 
-            imageData[i][j].red = (unsigned char)gray;
-            imageData[i][j].green = (unsigned char)gray;
-            imageData[i][j].blue = (unsigned char)gray;
+        if (len >= strlen(extension) && strcmp(path + len - strlen(extension), extension) != 0) {
+            return 1; // returnează adevărat dacă este un fișier obișnuit și nu are extensia .bmp
         }
     }
 
-    FILE *output = fopen(inputFile, "wb");
-    if (output == NULL) {
-        perror("Error opening output BMP file");
-        return;
-    }
-
-    fseek(output, 18, SEEK_SET);
-    fwrite(&imageWidth, sizeof(int), 4, output);
-    fwrite(&imageHeight, sizeof(int), 4, output);
-
-    for (int i = 0; i < imageHeight; ++i) {
-        fwrite(imageData[i], sizeof(Pixel), imageWidth, output);
-        free(imageData[i]);
-    }
-    free(imageData);
-
-    fclose(output);
+    return 0; // returnează fals în caz contrar
 }
+int isSymbolicLinkToFile(const char *path) {
+    struct stat fileStat;
 
-void processDirectory(const char *inputDir, const char *outputDir) {
-    DIR *dir;
-    struct dirent *entry;
-
-    dir = opendir(inputDir);
-    if (dir == NULL) {
-        perror("Error opening directory");
-        return;
+    if (lstat(path, &fileStat) == -1) {
+        perror("Eroare la obtinerea informatiilor despre fisier");
+        return 0; // returnează fals dacă nu se pot obține informațiile despre fișier
     }
 
-    while ((entry = readdir(dir)) != NULL) {
-        char inputFile[256];
-        snprintf(inputFile, sizeof(inputFile), "%s/%s", inputDir, entry->d_name);
+    // Verificăm dacă este o legătură simbolică
+    if (S_ISLNK(fileStat.st_mode)) {
+        // Obținem informații despre fișierul la care indică legătura simbolică
+        struct stat targetStat;
+        if (stat(path, &targetStat) == -1) {
+            perror("Eroare la obtinerea informatiilor despre legatura simbolica");
+            return 0;
+        }
 
-        if (entry->d_type == DT_REG) {
-            if (strstr(entry->d_name, ".bmp") != NULL) {
-                pid_t pid = fork();
-                if (pid == 0) {
-                    processBMPFile(inputFile, outputDir);
-                    exit(EXIT_SUCCESS);
-                }
-                wait(NULL);
-            } else {
-                pid_t pid = fork();
-                if (pid == 0) {
-                    processRegularFile(inputFile, outputDir);
-                    exit(EXIT_SUCCESS);
-                }
-                int linesWritten = 0; // Placeholder for the number of lines written
-                write(/* pipe */, &linesWritten, sizeof(int));
-                exit(EXIT_SUCCESS);
-            }
-        } else if (entry->d_type == DT_DIR && strcmp(entry->d_name, ".") != 0 && strcmp(entry->d_name, "..") != 0) {
-            pid_t pid = fork();
-            if (pid == 0) {
-                processDirectory(inputFile, outputDir);
-                exit(EXIT_SUCCESS);
-            }
-            wait(NULL);
+        // Verificăm dacă fișierul la care indică legătura simbolică este un fișier obișnuit
+        if (S_ISREG(targetStat.st_mode)) {
+            return 1; // returnează adevărat dacă este o legătură simbolică către un fișier obișnuit
         }
     }
 
-    closedir(dir);
+    return 0; // returnează fals în caz contrar
 }
+int getSymbolicLinkSize(const char *path) {
+    struct stat fileStat;
 
-int main(int argc, char *argv[]) {
-    if (argc != 3) {
-        printf("Usage: %s <input_directory> <output_directory>\n", argv[0]);
-        exit(EXIT_FAILURE);
+    if (lstat(path, &fileStat) == -1) {
+        perror("Eroare la obtinerea informatiilor despre legatura simbolica");
+        return -1; // returnează -1 în caz de eroare
     }
 
-    char *inputDir = argv[1];
-    char *outputDir = argv[2];
+    if (!S_ISLNK(fileStat.st_mode)) {
+        printf("Fisierul specificat nu este o legatura simbolica.\n");
+        return -1; // returnează -1 dacă calea specificată nu este o legătură simbolică
+    }
 
-    processDirectory(inputDir, outputDir);
+    // Aflăm dimensiunea legăturii simbolice
+    ssize_t linkSize = readlink(path, NULL, 0);
+    if (linkSize == -1) {
+        perror("Eroare la aflarea dimensiunii legaturii simbolice");
+        return -1; // returnează -1 în caz de eroare
+    }
+
+    return linkSize; // returnează dimensiunea legăturii simbolice
+}
+int getTargetFileSize(const char *path) {
+    struct stat fileStat;
+
+    if (lstat(path, &fileStat) == -1) {
+        perror("Eroare la obtinerea informatiilor despre legatura simbolica");
+        return -1; // returnează -1 în caz de eroare
+    }
+
+    if (!S_ISLNK(fileStat.st_mode)) {
+        printf("Fisierul specificat nu este o legatura simbolica.\n");
+        return -1; // returnează -1 dacă calea specificată nu este o legătură simbolică
+    }
+
+    // Obținem informații despre fișierul target
+    if (stat(path, &fileStat) == -1) {
+        perror("Eroare la obtinerea informatiilor despre fisierul target");
+        return -1; // returnează -1 în caz de eroare
+    }
+
+    return fileStat.st_size; // returnează dimensiunea fișierului target
+}
+float getGreyColor(const char* path)
+{
+    FILE* fp = fopen(path, "r");
+    char header,red,blue,green;
+    read(fp,header,54);
+    read(fp,red,1);
+    read(fp,green,1);
+    read(fp,blue,1);
+    float grey;
+    grey=0.299*atoi(red)+0.587*atoi(green)+0.114*atoi(blue);
+    return grey;
+}
+void BandW_BMPFile(const char* path)
+{
+    if(isBMPFile(path))
+    {
+        FILE* fp = fopen(path, "w+");
+        int header;
+        float grey=getGreyColor(path);
+        write(grey,fp,55);
+        write(grey,fp,56);
+        write(grey,fp,57);
+    }
+
+}
+void generateFileStatistics(const char* filename, const char* header,const char* output ) {
+    if(isBMPFile(filename)) {
+        int width, height;
+        memcpy(&width, header + 18, 4);
+        memcpy(&height, header + 22, 4);
+
+        struct stat fileStat;
+        stat(filename, &fileStat);
+
+        char modifDate[40];
+        strftime(modifDate, sizeof(modifDate), "%d.%m.%Y", localtime(&fileStat.st_mtime));
+
+        char result[1000];
+        sprintf(result, "File Name: %s\nHeight: %d\nWidth: %d\nSize: %ld\nUser ID: %d\n",
+                filename, height, width, fileStat.st_size, fileStat.st_uid);
+        sprintf(result + strlen(result), "Last Modified Time: %s\nLink Count: %d\n",
+                modifDate, fileStat.st_nlink);
+        sprintf(result + strlen(result), "User Access Rights: %c%c%c\n",
+                (fileStat.st_mode & S_IRUSR) ? 'R' : '-',
+                (fileStat.st_mode & S_IWUSR) ? 'W' : '-',
+                (fileStat.st_mode & S_IXUSR) ? 'X' : '-');
+        sprintf(result + strlen(result), "Group Access Rights: %c%c%c\n",
+                (fileStat.st_mode & S_IRGRP) ? 'R' : '-',
+                (fileStat.st_mode & S_IWGRP) ? 'W' : '-',
+                (fileStat.st_mode & S_IXGRP) ? 'X' : '-');
+        sprintf(result + strlen(result), "Others Access Rights: %c%c%c\n",
+                (fileStat.st_mode & S_IROTH) ? 'R' : '-',
+                (fileStat.st_mode & S_IWOTH) ? 'W' : '-',
+                (fileStat.st_mode & S_IXOTH) ? 'X' : '-');
+
+        int outFile = open(output, O_CREAT | O_WRONLY, S_IRUSR | S_IWUSR);
+        if (outFile == -1) {
+            perror("Couldn't create the file");
+            exit(-1);
+        }
+
+        if (write(outFile, result, strlen(result)) == -1) {
+            perror("Couldn't write to the file");
+            exit(-1);
+        }
+
+        close(outFile);
+    }
+    else
+       if(isDirectory(filename))
+       {
+           struct stat fileStat;
+           stat(filename, &fileStat);
+           char result[1000];
+           sprintf(result, "File Name: %ld\nUser ID: %d\n",
+                   filename , fileStat.st_uid);
+           sprintf(result + strlen(result), "User Access Rights: %c%c%c\n",
+                   (fileStat.st_mode & S_IRUSR) ? 'R' : '-',
+                   (fileStat.st_mode & S_IWUSR) ? 'W' : '-',
+                   (fileStat.st_mode & S_IXUSR) ? 'X' : '-');
+           sprintf(result + strlen(result), "Group Access Rights: %c%c%c\n",
+                   (fileStat.st_mode & S_IRGRP) ? 'R' : '-',
+                   (fileStat.st_mode & S_IWGRP) ? 'W' : '-',
+                   (fileStat.st_mode & S_IXGRP) ? 'X' : '-');
+           sprintf(result + strlen(result), "Others Access Rights: %c%c%c\n",
+                   (fileStat.st_mode & S_IROTH) ? 'R' : '-',
+                   (fileStat.st_mode & S_IWOTH) ? 'W' : '-',
+                   (fileStat.st_mode & S_IXOTH) ? 'X' : '-');
+           int outFile = open(output, O_CREAT | O_WRONLY, S_IRUSR | S_IWUSR);
+           if (outFile == -1) {
+               perror("Couldn't create the file");
+               exit(-1);
+           }
+
+           if (write(outFile, result, strlen(result)) == -1) {
+               perror("Couldn't write to the file");
+               exit(-1);
+           }
+
+           close(outFile);
+       }
+       else
+           if(isRegularFileWithoutBMPExtension(filename))
+           {
+               struct stat fileStat;
+               stat(filename, &fileStat);
+
+               char modifDate[40];
+               strftime(modifDate, sizeof(modifDate), "%d.%m.%Y", localtime(&fileStat.st_mtime));
+
+               char result[1000];
+               sprintf(result, "File Name: %s %d\nSize: %ld\nUser ID: %d\n",
+                       filename, fileStat.st_size, fileStat.st_uid);
+               sprintf(result + strlen(result), "Last Modified Time: %s\nLink Count: %d\n",
+                       modifDate, fileStat.st_nlink);
+               sprintf(result + strlen(result), "User Access Rights: %c%c%c\n",
+                       (fileStat.st_mode & S_IRUSR) ? 'R' : '-',
+                       (fileStat.st_mode & S_IWUSR) ? 'W' : '-',
+                       (fileStat.st_mode & S_IXUSR) ? 'X' : '-');
+               sprintf(result + strlen(result), "Group Access Rights: %c%c%c\n",
+                       (fileStat.st_mode & S_IRGRP) ? 'R' : '-',
+                       (fileStat.st_mode & S_IWGRP) ? 'W' : '-',
+                       (fileStat.st_mode & S_IXGRP) ? 'X' : '-');
+               sprintf(result + strlen(result), "Others Access Rights: %c%c%c\n",
+                       (fileStat.st_mode & S_IROTH) ? 'R' : '-',
+                       (fileStat.st_mode & S_IWOTH) ? 'W' : '-',
+                       (fileStat.st_mode & S_IXOTH) ? 'X' : '-');
+
+               int outFile = open(output, O_CREAT | O_WRONLY, S_IRUSR | S_IWUSR);
+               if (outFile == -1) {
+                   perror("Couldn't create the file");
+                   exit(-1);
+               }
+
+               if (write(outFile, result, strlen(result)) == -1) {
+                   perror("Couldn't write to the file");
+                   exit(-1);
+               }
+
+               close(outFile);
+           }
+           else
+               if(isSymbolicLinkToFile(filename))
+               {
+                   struct stat fileStat;
+                   stat(filename, &fileStat);
+
+                   char modifDate[40];
+                   strftime(modifDate, sizeof(modifDate), "%d.%m.%Y", localtime(&fileStat.st_mtime));
+
+                   char result[1000];
+                   sprintf(result, "File Name: %s File size: %d TargetFile size: %d %d\nSize: %ld\nUser ID: %d\n",
+                           filename, getSymbolicLinkSize(filename), getTargetFileSize(filename), fileStat.st_size, fileStat.st_uid);
+                   sprintf(result + strlen(result), "User Access Rights: %c%c%c\n",
+                           (fileStat.st_mode & S_IRUSR) ? 'R' : '-',
+                           (fileStat.st_mode & S_IWUSR) ? 'W' : '-',
+                           (fileStat.st_mode & S_IXUSR) ? 'X' : '-');
+                   sprintf(result + strlen(result), "Group Access Rights: %c%c%c\n",
+                           (fileStat.st_mode & S_IRGRP) ? 'R' : '-',
+                           (fileStat.st_mode & S_IWGRP) ? 'W' : '-',
+                           (fileStat.st_mode & S_IXGRP) ? 'X' : '-');
+                   sprintf(result + strlen(result), "Others Access Rights: %c%c%c\n",
+                           (fileStat.st_mode & S_IROTH) ? 'R' : '-',
+                           (fileStat.st_mode & S_IWOTH) ? 'W' : '-',
+                           (fileStat.st_mode & S_IXOTH) ? 'X' : '-');
+                   int outFile = open(output, O_CREAT | O_WRONLY, S_IRUSR | S_IWUSR);
+                   if (outFile == -1) {
+                       perror("Couldn't create the file");
+                       exit(-1);
+                   }
+
+                   if (write(outFile, result, strlen(result)) == -1) {
+                       perror("Couldn't write to the file");
+                       exit(-1);
+                   }
+
+                   close(outFile);
+               }
+}
+void process(const char* path, const char header, const char* output) {
+    pid_t pid= fork();
+    switch (pid) {
+        case -1:
+            /* error forking */
+            printf("EXIT_FAILURE;");
+            exit(-1);
+        case 0:
+            /* child process */
+            BandW_BMPFile(path);
+        default:
+            /*parent process*/
+            generateFileStatistics(path, header, output);
+            break;
+    }
+}
+int main(int argc, char** argv) {
+    if (argc != 2) {
+        printf("Usage: ./program <filename>\n");
+        exit(-1);
+    }
+
+    int inputFile = open(argv[1], O_RDONLY);
+    if (inputFile == -1) {
+        perror("Couldn't open the file\n");
+        exit(-1);
+    }
+
+    char header[HEADER + 1];
+    ssize_t count = read(inputFile, header, HEADER);
+    if (count < HEADER) {
+        printf("Couldn't read the header, %zd\n", count);
+        exit(-1);
+    }
+process(argv[1],header,argv[2]);
 
     return 0;
+}
